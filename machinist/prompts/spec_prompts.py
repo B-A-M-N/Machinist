@@ -59,13 +59,32 @@ The template provides strict constraints that you MUST follow.
 "{{goal}}"
 
 **Instructions:**
-1.  Read the user's goal and the provided pseudo-spec template.
-2.  Generate a complete `ToolSpec` JSON object that fulfills the goal while strictly adhering to ALL constraints from the template.
-3.  The `name` of the function should be descriptive of the goal, but consistent with the template's intent (e.g., for a 'copy' intent, a name like `duplicate_config_file` is good).
-4.  The `signature` and `inputs` must match the `param_skeletons` in the template.
-5.  The `imports` must only contain modules from the template's `allowed_imports`.
-6.  The `failure_modes` must include all `base_failure_modes` from the template.
-7.  The `docstring` must be well-written and accurately describe the function, its parameters, and what it returns. The language used in the docstring should not contradict the `forbidden_verbs` from the template.
+1.  **Analyze the User's Goal**: This is the MOST IMPORTANT input. The generated function MUST accomplish this goal.
+2.  **Use the Template as a Guide**: The "Pseudo-Spec Template" provides the *structure*, *constraints*, and *style* (imports, safety rules, failure modes) you must follow. It is NOT the function itself.
+    - Example: If the template is for "search_files" but the goal is "delete files", you must create a "delete_files" function that *follows the safety rules* of the template (e.g. no subprocess), but *performs the delete action*.
+    - Example: If the template is "search_files" and the goal is "find and replace in files", you must create a "find_and_replace" function using similar imports/style.
+3.  **Generate the ToolSpec**: Create a complete JSON object.
+    - The `name` must match your Goal (e.g. `replace_line_in_file`).
+    - The `signature` must have parameters required by your Goal.
+    - The `docstring` must describe your Goal.
+4.  **Adhere to Constraints**:
+    - Use only `allowed_imports` from the template.
+    - Respect `forbidden_verbs`.
+    - Include `base_failure_modes`.
 
 You must return ONLY the final `ToolSpec` JSON object in a markdown code fence. Do not include any other text, explanations, or wrappers.
+
+**Example Output:**
+```json
+{
+  "name": "my_tool_function",
+  "signature": "def my_tool_function(param1: str) -> None:",
+  "docstring": "Description of the function.",
+  "imports": ["os"],
+  "inputs": {"param1": "Description of param1"},
+  "outputs": {},
+  "failure_modes": [{"exception": "ValueError", "reason": "..."}],
+  "deterministic": true
+}
+```
 """

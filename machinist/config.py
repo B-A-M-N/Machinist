@@ -38,9 +38,9 @@ class MachinistConfig:
 
     # LLM Configuration
     models: List[str] = field(default_factory=list)
-    spec_model_name: str | None = "llama3.2:latest"
+    spec_model_name: str | None = "rnj-1:8b-cloud"
     impl_model_name: str | None = None
-    test_model_name: str | None = "qwen2.5-coder:3b"
+    test_model_name: str | None = "rnj-1:8b-cloud"
 
     def resolved_paths(self) -> List[Path]:
         return [p.resolve() for p in self.exploration_paths]

@@ -102,10 +102,10 @@ class SystemConfig:
     """Advanced central configuration for the autonomous function development system."""
     
     # Model Configuration with enhanced thinking suppression
-    CODE_GENERATION_MODEL = "qwen3:30bnothink"  # Primary code generation model
-    INTELLIGENCE_MODEL = "llama3.2:latest"      # Intelligence model for exploration
-    JSON_FORMATTER_MODEL = "llama3.2:latest"
-    VALIDATION_MODEL = "codellama:13b"
+    CODE_GENERATION_MODEL = "rnj-1:8b-cloud"  # Primary code generation model
+    INTELLIGENCE_MODEL = "rnj-1:8b-cloud"      # Intelligence model for exploration
+    JSON_FORMATTER_MODEL = "rnj-1:8b-cloud"
+    VALIDATION_MODEL = "rnj-1:8b-cloud"
     
     # System Paths
     DATABASE_PATH = "function_database.db"
@@ -222,7 +222,7 @@ class SystemConfig:
                 config_data = json.load(f)
             
             config = cls()
-            config.CODE_GENERATION_MODEL = config_data.get("code_generation_model", "qwen3:30bnothink")
+            config.CODE_GENERATION_MODEL = config_data.get("code_generation_model", "rnj-1:8b-cloud")
             config.MAX_AUTONOMOUS_ITERATIONS = max(1, min(1000, config_data.get("max_autonomous_iterations", 99)))
             config.EXPLORATION_TIMEOUT = max(60, min(3600, config_data.get("exploration_timeout", 900)))
             config.EXPLORATION_INTERVAL = max(0.5, min(60, config_data.get("exploration_interval", 2.0)))

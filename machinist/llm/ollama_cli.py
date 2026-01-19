@@ -32,7 +32,7 @@ class OllamaClient(LLMClient):
         temperature: float = 0.0,
         max_tokens: int | None = None,
         on_token: Optional[callable] = None,
-        timeout: float | None = None,
+        timeout: float = 600,
     ) -> str:
         composed = f"System:\n{system}\n\nUser:\n{prompt}"
         cmd = ["ollama", "run", self._model]

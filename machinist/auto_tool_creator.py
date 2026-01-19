@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
 
@@ -19,16 +20,31 @@ if False: # Only for type checking
 
 
 class AutoToolCreator:
+    # Define aliases for common LLM hallucinations or preferred naming
+    ALIASES = {
+        r"fs\.(\w+)\.v\d+": r"\1",  # e.g., fs.search_files.v1 -> search_files
+        r"filesystem\.(\w+)": r"\1", # e.g., filesystem.copy -> copy
+    }
+
     def __init__(self, pipeline: "MachinistPipeline", registry: ToolRegistry, llm_interface: LLMInterface):
         self.pipeline = pipeline
         self.registry = registry
         self.llm_interface = llm_interface
+
+    def _resolve_tool_id_alias(self, tool_id: str) -> str:
+        """Resolves tool_id aliases to their canonical form."""
+        for pattern, replacement in self.ALIASES.items():
+            match = re.fullmatch(pattern, tool_id)
+            if match:
+                return match.expand(replacement)
+        return tool_id
 
     def create_tool_from_composition_spec(
         self,
         goal: str,
         available_tools: List[PseudoSpecTemplate],
         composition_spec: CompositionSpec | None = None,
+        available_tool_ids_for_rules_str: str | None = None,
         stream: bool = True,
         on_token=None,
     ) -> ToolMetadata:
@@ -36,16 +52,21 @@ class AutoToolCreator:
         if composition_spec is None:
             print(f"Generating CompositionSpec for goal: {goal}")
             composition_spec = self.pipeline.generate_composition_spec(
-                goal, available_tools
+                goal, available_tools, stream=stream, on_token=on_token,
+                available_tool_ids_for_rules_str=available_tool_ids_for_rules_str
             )
             print(f"Generated CompositionSpec: {composition_spec.pipeline_id}")
 
         # 1. Gather source code of component tools
         component_tools_source_map: Dict[str, str] = {}
         for step in composition_spec.steps:
+            # Resolve alias before looking up in registry
+            canonical_tool_id = self._resolve_tool_id_alias(step.tool_id)
+            step.tool_id = canonical_tool_id # Update the tool_id in the step
+            
             concrete_tool_ids = self.registry.find_by_template_id(step.tool_id)
             if not concrete_tool_ids:
-                raise RuntimeError(f"Could not find concrete tool for template ID: {step.tool_id}")
+                raise RuntimeError(f"Could not find concrete tool for template ID: {step.tool_id} (original: {step.tool_id})")
             
             # For now, just take the first concrete tool found
             tool_id_to_use = concrete_tool_ids[0]

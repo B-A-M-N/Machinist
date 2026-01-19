@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import importlib.util
+import math
+import sys
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -596,6 +598,74 @@ class ToolRegistry:
 
 
 
+
+    def search_tools(self, query: str, embedder: Callable[[str], List[float]] | None = None, top_k: int = 5) -> List[ToolMetadata]:
+        """
+        Searches tools using semantic similarity if an embedder is provided,
+        otherwise falls back to keyword matching.
+        """
+        all_tools = self.list_tools()
+        if not all_tools:
+            return []
+            
+        if not embedder:
+            # Fallback to keyword search
+            query_lower = query.lower()
+            results = []
+            for tool in all_tools:
+                # Weighted search: name is more important
+                score = 0
+                if query_lower in tool.spec.name.lower(): score += 3
+                if query_lower in tool.spec.docstring.lower(): score += 1
+                for kw in query_lower.split():
+                    if kw in tool.spec.name.lower(): score += 1
+                
+                if score > 0:
+                    results.append((score, tool))
+            
+            results.sort(key=lambda x: x[0], reverse=True)
+            return [r[1] for r in results[:top_k]]
+
+        # Semantic search
+        query_embedding = embedder(query)
+        
+        # Load embedding cache
+        cache_path = self.root / "embeddings_cache.json"
+        cache = {}
+        if cache_path.exists():
+            try:
+                cache = json.loads(cache_path.read_text())
+            except: pass
+            
+        tool_scores = []
+        dirty = False
+        
+        for tool in all_tools:
+            # content to embed
+            text = f"{tool.spec.name}: {tool.spec.docstring}"
+            tool_hash = _hash_payload(text) # Use existing hash function
+            
+            if tool_hash in cache:
+                embedding = cache[tool_hash]
+            else:
+                embedding = embedder(text)
+                cache[tool_hash] = embedding
+                dirty = True
+            
+            score = self._cosine_similarity(query_embedding, embedding)
+            tool_scores.append((score, tool))
+            
+        if dirty:
+             cache_path.write_text(json.dumps(cache))
+             
+        tool_scores.sort(key=lambda x: x[0], reverse=True)
+        return [r[1] for r in tool_scores[:top_k]]
+
+    def _cosine_similarity(self, v1: List[float], v2: List[float]) -> float:
+        dot_product = sum(a * b for a, b in zip(v1, v2))
+        norm_v1 = math.sqrt(sum(a * a for a in v1))
+        norm_v2 = math.sqrt(sum(a * a for a in v2))
+        return dot_product / (norm_v1 * norm_v2) if norm_v1 > 0 and norm_v2 > 0 else 0.0
 
     def list_tools(self) -> List[ToolMetadata]:
 

@@ -74,3 +74,19 @@ class OllamaAPIClient(LLMClient):
         )
         with urllib.request.urlopen(req, timeout=600) as resp:
             return json.loads(resp.read().decode("utf-8"))
+
+    def embeddings(self, prompt: str) -> List[float]:
+        payload = {
+            "model": self._model,
+            "prompt": prompt
+        }
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            f"{self._host}/api/embeddings",
+            data=data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            out = json.loads(resp.read().decode("utf-8"))
+        return out.get("embedding", [])

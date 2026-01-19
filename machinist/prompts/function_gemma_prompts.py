@@ -65,5 +65,25 @@ If a new tool needs to be created, return:
 }
 ```
 
+**Example Output:**
+```json
+{
+  "decision": "create_new",
+  "reason": "No existing tool provides weather data.",
+  "tool_spec": {
+    "name": "get_weather",
+    "description": "Fetches current weather for a city.",
+    "parameters": {
+      "type": "object",
+      "required": ["city"],
+      "properties": {
+        "city": {"type": "string", "description": "City name."}
+      }
+    },
+    "returns": {"type": "string", "description": "Weather summary."}
+  }
+}
+```
+
 Return ONLY the JSON object.
 """

@@ -19,6 +19,8 @@ class SandboxPolicy:
     readonly_paths: Sequence[Path] = field(default_factory=list)
     writable_paths: Sequence[Path] = field(default_factory=list)
     extra_args: Sequence[str] = field(default_factory=list)
+    memory_limit_mb: int = 1024  # Default 1GB
+    cpu_time_limit_sec: int = 60 # Default 60s
 
 
 class BwrapSandbox:
@@ -78,7 +80,18 @@ class BwrapSandbox:
         workdir_path.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="machinist-scratch-") as scratch_dir:
             scratch_path = Path(scratch_dir)
-            bwrap_cmd = ["bwrap", *self._base_args(scratch_path, workdir_path), "--", *command]
+            
+            # Prepare resource limits command prefix
+            cmd_prefix = []
+            if shutil.which("prlimit"):
+                if self.policy.memory_limit_mb > 0:
+                     mem_bytes = self.policy.memory_limit_mb * 1024 * 1024
+                     cmd_prefix.extend(["prlimit", f"--as={mem_bytes}"])
+                if self.policy.cpu_time_limit_sec > 0:
+                     cmd_prefix.extend(["prlimit", f"--cpu={self.policy.cpu_time_limit_sec}"])
+
+            bwrap_cmd = ["bwrap", *self._base_args(scratch_path, workdir_path), "--", *cmd_prefix, *command]
+            
             if not stream:
                 result = subprocess.run(
                     bwrap_cmd,

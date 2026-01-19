@@ -19,14 +19,17 @@ You will be given a user goal and a list of available tool templates. You must d
     - Use `$variable_name` to refer to a global pipeline input.
     - Use `$step_id.output_name` to refer to the output of a previous step.
     - Use `$item` to refer to the current item in a `foreach` loop.
+6.  You may only use `tool_id` values from this list: `{{available_tool_ids_for_rules}}`. Do not invent namespaces or versions for `tool_id`.
 
-**You must output EXACTLY one JSON object and nothing else.**
-- No markdown code fences.
-- No explanation.
-- No surrounding keys like {"CompositionSpec": ...}.
+Output exactly **one** JSON object and nothing else.
+- No markdown fences, no commentary, no leading/trailing text.
+- All keys and string values **must use double quotes**.
+- Do not use single quotes.
+- Do not use trailing commas.
 - Must include required keys: "pipeline_id", "description", "inputs", "steps".
 - All strings must be valid JSON strings (no unescaped newlines).
 - Do NOT use "+" concatenation, "$( )", or any template syntax inside JSON.
+
 
 **CompositionSpec JSON Format:**
 - "pipeline_id" (str): A unique, descriptive name for the workflow (e.g., "fs.find_and_copy.v1").
@@ -42,7 +45,6 @@ You will be given a user goal and a list of available tool templates. You must d
 - "failure_policy" (list[dict]): Rules for handling failures.
 
 Example:
-Goal: "Find all text files in a directory and copy them to a backup folder."
 ```json
 {
   "pipeline_id": "fs.find_and_copy.v1",
@@ -84,5 +86,8 @@ Goal: "Find all text files in a directory and copy them to a backup folder."
     }
   ]
 }
+```
+
+If you receive an error, return corrected JSON only.
 Return JSON only.
 """

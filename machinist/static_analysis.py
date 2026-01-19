@@ -170,6 +170,29 @@ class CodeVisitor(ast.NodeVisitor):
         # The target itself is a definition, so visit it to add to defined_names
         self.visit(node.target)
 
+    def _visit_comp(self, node):
+        # Create a new scope for the comprehension
+        comp_scope = set()
+        self._scope_stack.append(comp_scope)
+        
+        # Visit generators first to define variables (e.g. 'for i in ...')
+        for generator in node.generators:
+            self.visit(generator)
+            
+        # Visit the element/key/value expression which uses the variables
+        if hasattr(node, 'elt'):
+            self.visit(node.elt)
+        elif hasattr(node, 'key'):
+            self.visit(node.key)
+            self.visit(node.value)
+            
+        self._scope_stack.pop()
+
+    def visit_ListComp(self, node): self._visit_comp(node)
+    def visit_SetComp(self, node): self._visit_comp(node)
+    def visit_GeneratorExp(self, node): self._visit_comp(node)
+    def visit_DictComp(self, node): self._visit_comp(node)
+
 
 def validate_code_ast(
     code: str,

@@ -21,13 +21,13 @@ from .registry import ToolRegistry
 from .sandbox import SandboxPolicy
 from .parsing import to_safe_module_name
 from . import standard_tools
-from .templates import select_template, TEMPLATE_REGISTRY, PseudoSpecTemplate
+from .templates import select_template, TEMPLATE_REGISTRY, PseudoSpecTemplate, spec_from_fg_skeleton
 from .extractor import spec_from_existing_function, specs_from_directory, comp_spec_from_existing_script
 from .workflow import WorkflowEngine
 from .prompts.autonomous_tool_creation_prompts import GENERATE_AUTONOMOUS_GOAL_PROMPT
 from .llm.base import render_prompt
 
-DEFAULT_MODELS = ["phi4-mini", "llama3.2", "qwen3:4b", "qwen2.5-coder:3b"]
+DEFAULT_MODELS = ["rnj-1:8b-cloud", "phi4-mini", "llama3.2", "qwen3:4b", "qwen2.5-coder:3b"]
 CONSOLE = Console()
 
 # --- UI Components ---
@@ -76,6 +76,7 @@ def _pick_main_mode() -> str:
         "3": "Extract Spec from File or Directory",
         "4": "Extract Composition Spec from Script",
         "5": "Autonomous Tool Creation",
+        "6": "Search Registry",
         "q": "Quit"
     }
     for key, desc in modes.items():
@@ -89,10 +90,37 @@ def _pick_main_mode() -> str:
             return "Quit"
         print("Invalid choice, please try again.")
 
+def handle_search_registry(pipeline: MachinistPipeline, registry: ToolRegistry, args: argparse.Namespace):
+    if hasattr(args, 'goal') and args.goal:
+        query = args.goal
+    else:
+        query = input("\nEnter search query: ").strip()
+    
+    if not query:
+        return
+
+    print(f"\nSearching for: '{query}'...")
+    # Use the embedder from the pipeline
+    embedder = pipeline.embed_llm.embeddings if pipeline and hasattr(pipeline.embed_llm, 'embeddings') else None
+    results = registry.search_tools(query, embedder=embedder)
+
+    if not results:
+        print("No matching tools found.")
+        return
+
+    print(f"\nFound {len(results)} matching tools:")
+    for i, tool in enumerate(results):
+        CONSOLE.print(f"  {i+1}) [bold cyan]{tool.spec.name}[/bold cyan] (ID: {tool.tool_id})")
+        print(f"     Description: {tool.spec.docstring.splitlines()[0]}")
+
 # --- Mode Handlers ---
 
 def handle_generate_single_tool(pipeline: MachinistPipeline, registry: ToolRegistry, args: argparse.Namespace):
-    goal = input("\nEnter tool goal: ").strip()
+    if hasattr(args, 'goal') and args.goal:
+        goal = args.goal
+    else:
+        goal = input("\nEnter tool goal: ").strip()
+        
     if not goal:
         return
 
@@ -175,13 +203,21 @@ def handle_generate_single_tool(pipeline: MachinistPipeline, registry: ToolRegis
             print("Validation failed after repair attempts.")
             return
 
-    if _confirm("Promote tool to registry?"):
+    interactive = args.mode is None
+
+    if (interactive and _confirm("Promote tool to registry?")) or (not interactive and getattr(args, 'promote', False)):
         meta = pipeline.promote(spec, source_path, tests_path, validation, template=template)
         print(f"Promoted tool {spec.name} -> {meta.tool_id}")
+    elif not interactive:
+        print("\nNon-interactive mode: skipping promotion to registry.")
 
 
 def handle_run_workflow(pipeline: MachinistPipeline, registry: ToolRegistry, args: argparse.Namespace):
-    goal = input("\nEnter workflow goal: ").strip()
+    if hasattr(args, 'goal') and args.goal:
+        goal = args.goal
+    else:
+        goal = input("\nEnter workflow goal: ").strip()
+
     if not goal:
         return
         
@@ -278,7 +314,20 @@ def handle_autonomous_tool_creation(pipeline: MachinistPipeline, registry: ToolR
             print("No existing tools found in the registry. Please add some tools first.")
             return
 
+        print("--- Registered Tools ---")
+        canonical_tool_ids = []
+        for tool in existing_tools:
+            print(f"- ID: {tool.tool_id}, Name: {tool.spec.name}")
+            canonical_tool_ids.append(tool.tool_id)
+        print("------------------------")
+
+        # Prepare existing tools JSON for goal generation prompt
         existing_tools_json = json.dumps([asdict(t.spec) for t in existing_tools], indent=2)
+
+        # Extract actual tool IDs for CompositionSpec generation prompt rules
+        available_tool_ids_for_rules = canonical_tool_ids
+        available_tool_ids_for_rules_str = ", ".join(f'"{tid}"' for tid in available_tool_ids_for_rules)
+
 
         print("\n[2/4] Generating a new tool goal...")
         goal_prompt = render_prompt(GENERATE_AUTONOMOUS_GOAL_PROMPT, existing_tools_json=existing_tools_json)
@@ -288,13 +337,13 @@ def handle_autonomous_tool_creation(pipeline: MachinistPipeline, registry: ToolR
 
         print(f"Generated Goal: {new_goal}")
 
-        if not _confirm("Proceed with this goal?", default=True):
-            continue
+
 
         try:
             print("\n[3/4] Creating the composite tool...")
             templates = [PseudoSpecTemplate.from_tool_spec(t.spec) for t in existing_tools]
-            pipeline.create_composite_tool(new_goal, templates)
+            pipeline.create_composite_tool(new_goal, templates, available_tool_ids_for_rules_str=available_tool_ids_for_rules_str, stream=True, on_token=lambda t: print(t, end="", flush=True))
+
 
             print("\n[4/4] Autonomous tool creation iteration finished.")
         except Exception as e:
@@ -307,31 +356,53 @@ def handle_autonomous_tool_creation(pipeline: MachinistPipeline, registry: ToolR
 def main(argv: list[str] | None = None) -> int:
     show_splash()
     parser = argparse.ArgumentParser(description="Machinist: Your LLM-Tooling Foundry")
-    parser.add_argument("--model", default="llama3.2", help="Ollama model name for non-interactive runs.")
+    parser.add_argument("--model", default="rnj-1:8b-cloud", help="Ollama model name for non-interactive runs.")
     parser.add_argument("--registry", default="registry", help="Registry directory.")
+    parser.add_argument("--mode", help="Mode to run (1-6).")
+    parser.add_argument("--goal", help="Goal or query for the selected mode.")
     args = parser.parse_args(argv)
 
     registry = ToolRegistry(Path(args.registry))
     pipeline = None
 
+    # Helper to map numeric mode to string
+    mode_map = {
+        "1": "Generate Single Tool",
+        "2": "Generate & Run Workflow",
+        "3": "Extract Spec from File or Directory",
+        "4": "Extract Composition Spec from Script",
+        "5": "Autonomous Tool Creation",
+        "6": "Search Registry"
+    }
+
+    interactive = args.mode is None
+
     while True:
-        mode = _pick_main_mode()
+        if interactive:
+            mode = _pick_main_mode()
+        else:
+            mode = mode_map.get(args.mode)
+            if not mode:
+                print(f"Invalid mode: {args.mode}")
+                return 1
 
         if mode == "Quit":
             return 0
         
-        if pipeline is None and mode in ["Generate Single Tool", "Generate & Run Workflow", "Autonomous Tool Creation"]:
+        if pipeline is None and mode in ["Generate Single Tool", "Generate & Run Workflow", "Autonomous Tool Creation", "Search Registry"]:
             print("Initializing LLM clients...")
             spec_llm = OllamaClient(args.model)
             impl_llm = OllamaClient(args.model)
             test_llm = OllamaClient(args.model)
             fg_llm = OllamaAPIClient("functiongemma")
+            embed_llm = OllamaAPIClient("nomic-embed-text")
 
             pipeline = MachinistPipeline(
                 spec_llm=spec_llm,
                 impl_llm=impl_llm,
                 test_llm=test_llm,
                 fg_llm=fg_llm,
+                embed_llm=embed_llm,
                 registry=registry,
                 sandbox_policy=SandboxPolicy(),
             )
@@ -346,7 +417,12 @@ def main(argv: list[str] | None = None) -> int:
             handle_extract_composition_spec(registry)
         elif mode == "Autonomous Tool Creation":
             handle_autonomous_tool_creation(pipeline, registry, args)
+        elif mode == "Search Registry":
+            handle_search_registry(pipeline, registry, args)
         
+        if not interactive:
+            break
+
         print("\n" + "="*50 + "\n")
 
     return 0

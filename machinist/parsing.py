@@ -42,20 +42,47 @@ def literal_eval_safe(text: str) -> Any | None:
 
 def json_coerce(raw: str) -> Dict[str, Any]:
     """
-    Strictly parse a single JSON object from a ```json fenced block.
-    No brace-fallback. No repair. No YAML. No Python literals.
+    Strictly parse a single JSON object from a fenced block.
+    Allows ```json, ```python, or just ``` fences.
     """
     print(f"--- RAW_INPUT_TO_JSON_COERCE ---\n{raw}\n---------------------------------")
 
-    _JSON_FENCE_RE = re.compile(r"```json\s*(\{[\s\S]*?\})\s*```", re.DOTALL)
+    # Regex to find a JSON block inside triple backticks, with an optional language identifier
+    _JSON_FENCE_RE = re.compile(r"```(?:\w+)?\s*(\{[\s\S]*?\})\s*```", re.DOTALL)
     matches = _JSON_FENCE_RE.findall(raw)
-    if len(matches) != 1:
-        # Fallback for models that don't always add the json language tag
-        pattern = r"```\s*(\{[\s\S]*?\})\s*```"
-        matches = re.findall(pattern, raw, re.DOTALL)
+
+    if len(matches) == 0:
+        # Fallback: try to find a JSON object without fences if it looks valid
+        try:
+             # Try to extract just the first JSON-like block if fences are missing
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                 potential_json = raw[start : end + 1]
+                 # Verify it's valid JSON before accepting it
+                 json.loads(potential_json)
+                 matches = [potential_json]
+        except:
+             pass
 
     if len(matches) != 1:
-        raise ValueError(f"Expected exactly 1 JSON block, found {len(matches)}.")
+        # One last desperate attempt: if there are multiple blocks, pick the largest one that parses
+        if len(matches) > 1:
+            best_match = None
+            max_len = -1
+            for m in matches:
+                try:
+                    json.loads(m)
+                    if len(m) > max_len:
+                        max_len = len(m)
+                        best_match = m
+                except:
+                    continue
+            if best_match:
+                matches = [best_match]
+        
+        if len(matches) != 1:
+             raise ValueError(f"Expected exactly 1 JSON block, found {len(matches)}.")
     
     json_string = matches[0]
 
@@ -204,42 +231,67 @@ def normalize_snippet(raw: Optional[str]) -> str:
 def extract_python_code(text: str) -> str:
     """
     Extracts Python code from a string that might include markdown fences
-    and conversational text. It prioritizes fenced code blocks. If multiple
-    fenced blocks are found, it raises a ValueError.
+    and conversational text. It prioritizes fenced code blocks.
+    Handles double-fencing artifacts.
     """
     # Find all fenced code blocks
-    pattern = r"```(?:python\n)?(.*?)```"
+    # We use a greedy match for the content to handle nested backticks if possible, 
+    # but non-greedy is safer for multiple blocks.
+    # Let's try to find standard blocks first.
+    pattern = r"```(?:python\w*)?(.*?)```"
     matches = re.findall(pattern, text, re.DOTALL)
     
-    if len(matches) > 1:
-        raise ValueError("Multiple fenced code blocks found. Expected only one.")
-    
-    if matches:
-        return matches[0].strip()
-
-    # If no markdown fences are found, assume the text might be a mix of
-    # a preamble and code.
-    lines = text.strip().split('\n')
-    code_lines = []
-    in_code = False
-    
-    for line in lines:
-        # A line is considered code if it starts with a common Python keyword
-        # or is indented. This is a heuristic.
-        is_code_like = line.strip().startswith(('import ', 'from ', 'def ', '@', 'class ')) or (in_code and (line.startswith(' ') or line.strip() == ''))
+    if len(matches) == 0:
+         # If no markdown fences are found, assume the text might be a mix of
+        # a preamble and code.
+        lines = text.strip().split('\n')
+        code_lines = []
+        in_code = False
         
-        if is_code_like and not in_code:
-            # Start of a code block
-            in_code = True
-        
-        if in_code:
-            code_lines.append(line)
+        for line in lines:
+            # A line is considered code if it starts with a common Python keyword
+            # or is indented. This is a heuristic.
+            is_code_like = line.strip().startswith(('import ', 'from ', 'def ', '@', 'class ')) or (in_code and (line.startswith(' ') or line.strip() == ''))
             
-    if code_lines:
-        return '\n'.join(code_lines).strip()
+            if is_code_like and not in_code:
+                # Start of a code block
+                in_code = True
+            
+            if in_code:
+                code_lines.append(line)
+                
+        if code_lines:
+            return '\n'.join(code_lines).strip()
+        
+        # If all else fails, return the original text, as it might just be code.
+        return text.strip()
+
+    # We have matches.
+    candidate = matches[0].strip()
     
-    # If all else fails, return the original text, as it might just be code.
-    return text.strip()
+    # Check for double fencing (e.g. the content itself starts with ```python)
+    if candidate.startswith("```"):
+        return extract_python_code(candidate)
+
+    # If multiple blocks, some might be explanations or separate files.
+    # We prefer the one that looks like code (has imports or defs).
+    best_candidate = candidate
+    if len(matches) > 1:
+        # Heuristic: pick the longest block that looks like python
+        max_score = -1
+        for m in matches:
+            cleaned = m.strip()
+            score = 0
+            if "import " in cleaned: score += 1
+            if "def " in cleaned: score += 2
+            if "class " in cleaned: score += 2
+            if len(cleaned) > 50: score += 1
+            
+            if score > max_score:
+                max_score = score
+                best_candidate = cleaned
+    
+    return best_candidate
 
 def extract_json_block(text: str) -> str:
     """
@@ -251,6 +303,23 @@ def extract_json_block(text: str) -> str:
     if start == -1 or end == -1 or end <= start:
         raise ValueError("No JSON object found in LLM response")
     return text[start:end+1]
+
+def extract_json_safely(text: str) -> Dict[str, Any]:
+    """
+    Attempts to extract and parse a JSON object from text, even if messy.
+    """
+    # 1. Try code fences first
+    try:
+        return json_coerce(text)
+    except Exception:
+        pass
+
+    # 2. Try simple brace extraction
+    try:
+        block = extract_json_block(text)
+        return json.loads(block)
+    except Exception as e:
+        raise ValueError(f"Failed to extract valid JSON: {e}") from e
 
 
 def to_safe_module_name(name: str) -> str:

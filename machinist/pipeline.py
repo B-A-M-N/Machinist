@@ -29,11 +29,13 @@ class MachinistPipeline:
         impl_llm: LLMClient,
         test_llm: LLMClient,
         fg_llm: LLMClient, # NEW: FunctionGemma LLM client
+        embed_llm: LLMClient, # NEW: Embedding client (e.g. nomic-embed-text)
         registry: ToolRegistry,
         sandbox_policy: SandboxPolicy | None = None,
         config: MachinistConfig | None = None,
         validator: ValidationRunner | None = None,
     ) -> None:
+        self.embed_llm = embed_llm
         self.llm_interface = LLMInterface(
             spec_llm=spec_llm,
             impl_llm=impl_llm,
@@ -59,12 +61,15 @@ class MachinistPipeline:
         goal: str,
         available_tools: List[PseudoSpecTemplate],
         composition_spec: CompositionSpec | None = None,
+        available_tool_ids_for_rules_str: str | None = None,
+        stream: bool = True,
+        on_token=None,
     ) -> ToolMetadata:
         """
         Creates a new, single tool by composing existing tools based on a goal.
         """
         return self.auto_tool_creator.create_tool_from_composition_spec(
-            goal, available_tools, composition_spec
+            goal, available_tools, composition_spec, available_tool_ids_for_rules_str, stream, on_token
         )
 
 
@@ -120,9 +125,9 @@ class MachinistPipeline:
         validate_spec_against_template(spec, template)
         return spec
 
-    def generate_composition_spec(self, goal: str, available_tools: List[PseudoSpecTemplate], *, stream: bool = True, on_token=None) -> CompositionSpec:
+    def generate_composition_spec(self, goal: str, available_tools: List[PseudoSpecTemplate], *, stream: bool = True, on_token=None, available_tool_ids_for_rules_str: str | None = None) -> CompositionSpec:
         """Generates a CompositionSpec for a complex goal."""
-        return self.llm_interface.generate_composition_spec(goal, available_tools, stream=stream, on_token=on_token)
+        return self.llm_interface.generate_composition_spec(goal, available_tools, stream=stream, on_token=on_token, available_tool_ids_for_rules_str=available_tool_ids_for_rules_str)
 
     def generate_implementation(self, spec: ToolSpec, *, template: PseudoSpecTemplate | None = None, stream: bool = True, on_token=None, max_attempts: int = 3) -> Tuple[ToolSpec, str, bool]:
         error = None

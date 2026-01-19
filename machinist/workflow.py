@@ -43,6 +43,42 @@ class WorkflowEngine:
         return value.strip('"').strip("'")
 
 
+    def _evaluate_condition(self, condition: str, context: Dict[str, Any]) -> bool:
+        """
+        Evaluates a simple condition string.
+        Supports "$var", "$var == value", "$var != value".
+        """
+        if not condition:
+            return True
+
+        # Basic comparison parsing (very rudimentary)
+        if "==" in condition:
+            lhs, rhs = condition.split("==", 1)
+            try:
+                lhs_val = self._resolve_value(lhs.strip(), context)
+                rhs_val = self._resolve_value(rhs.strip(), context)
+                return str(lhs_val) == str(rhs_val)
+            except: pass
+        
+        if "!=" in condition:
+            lhs, rhs = condition.split("!=", 1)
+            try:
+                lhs_val = self._resolve_value(lhs.strip(), context)
+                rhs_val = self._resolve_value(rhs.strip(), context)
+                return str(lhs_val) != str(rhs_val)
+            except: pass
+
+        # Fallback: try to resolve as simple variable
+        try:
+            val = self._resolve_value(condition, context)
+            return bool(val)
+        except:
+            pass # Not a simple variable
+            
+        print(f"Warning: Could not evaluate condition '{condition}', defaulting to False.")
+        return False
+
+
     def execute(self, comp_spec: CompositionSpec, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
         Executes the workflow defined by the CompositionSpec.
@@ -54,10 +90,22 @@ class WorkflowEngine:
         for step in comp_spec.steps:
             print(f"  - Executing step: {step.id} (tool: {step.tool_id})")
 
+            # Check Condition
+            if step.if_condition:
+                 if not self._evaluate_condition(step.if_condition, context):
+                      print(f"    -> Skipping step '{step.id}' because condition '{step.if_condition}' is False.")
+                      continue
+
             # 1. Find a concrete, executable tool for the step's abstract tool_id
             concrete_tool_ids = self.tool_registry.find_by_template_id(step.tool_id)
+            
+            # Fallback: try to find by tool name directly
             if not concrete_tool_ids:
-                raise RuntimeError(f"Step '{step.id}': No registered tool found for template '{step.tool_id}'")
+                 all_tools = self.tool_registry.list_tools()
+                 concrete_tool_ids = [t.tool_id for t in all_tools if t.spec.name == step.tool_id]
+
+            if not concrete_tool_ids:
+                raise RuntimeError(f"Step '{step.id}': No registered tool found for template/name '{step.tool_id}'")
             
             # For now, just use the first one found
             tool_id_to_run = concrete_tool_ids[0]

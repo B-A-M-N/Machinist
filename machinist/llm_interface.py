@@ -3,11 +3,12 @@ from __future__ import annotations
 import re
 import ast
 import json
+import traceback # Import traceback
 from dataclasses import asdict
 from typing import Dict, List, Tuple, Any, Optional
 
 from .llm.base import DEFAULT_SYSTEM_PROMPT, LLMClient, render_prompt
-from .parsing import json_coerce, extract_json_block # Import extract_json_block
+from .parsing import json_coerce, extract_json_block, extract_json_safely # Import extract_json_safely
 from .prompts.spec_prompts import SPEC_PROMPT, SPEC_PROMPT_FROM_TEMPLATE
 from .prompts.impl_prompts import IMPLEMENT_PROMPT
 from .prompts.test_prompts import TEST_PROMPT
@@ -67,6 +68,40 @@ class LLMInterface:
         except Exception as e:
             print(f"Error during FunctionGemma tool selection: {e}")
             return None
+
+    def propose_tool_or_spec_skeleton(self, goal: str, templates: List[PseudoSpecTemplate]) -> Dict[str, Any]:
+        """
+        Uses FunctionGemma (or the intelligence model) to analyze the goal and propose 
+        using an existing template, creating a composition, or creating a new tool skeleton.
+        """
+        # Prepare the tool index for the prompt
+        tool_index = {}
+        for t in templates:
+            tool_index[t.id] = t.description
+        
+        tool_index_json = json.dumps(tool_index, indent=2)
+
+        prompt = render_prompt(
+            TOOL_GAP_ANALYSIS_PROMPT, 
+            goal=goal, 
+            tool_index_json=tool_index_json
+        )
+
+        try:
+            print("Asking LLM to analyze tool gap...")
+            # Use spec_llm (rnj-1:8b-cloud) instead of fg_llm for better reasoning
+            raw_response = self.spec_llm.complete(DEFAULT_SYSTEM_PROMPT, prompt, temperature=0.1, max_tokens=1500)
+            
+            # Use the new robust extraction
+            decision_data = extract_json_safely(raw_response)
+            return decision_data
+
+        except Exception as e:
+            print(f"Error during tool gap analysis: {e}")
+            if 'raw_response' in locals():
+                print(f"RAW LLM RESPONSE: {repr(raw_response)}")
+            # Fallback to a safe default that triggers keyword search in the caller
+            return {"decision": "error", "reason": str(e)}
 
 
     def generate_spec(
@@ -152,28 +187,52 @@ class LLMInterface:
         # This part should be unreachable if data is None, but kept for type hints
         return ToolSpec(**data)
         
-    def generate_composition_spec(self, goal: str, available_tools: List[PseudoSpecTemplate], *, stream: bool = True, on_token=None, max_attempts: int = 3) -> CompositionSpec:
+    def generate_composition_spec(self, goal: str, available_tools: List[PseudoSpecTemplate], *, stream: bool = True, on_token=None, max_attempts: int = 3, available_tool_ids_for_rules_str: str | None = None) -> CompositionSpec:
         available_tools_json = json.dumps([asdict(t) for t in available_tools], indent=2)
-        prompt = render_prompt(COMPOSITION_SPEC_PROMPT, available_tools_json=available_tools_json, goal=goal)
+        
+        prompt_args = {
+            "available_tools_json": available_tools_json,
+            "goal": goal
+        }
+        if available_tool_ids_for_rules_str:
+            prompt_args["available_tool_ids_for_rules"] = available_tool_ids_for_rules_str
+
+        prompt = render_prompt(COMPOSITION_SPEC_PROMPT, **prompt_args)
         
         error = None
         data = None
+        raw_output_for_repair = None
+        
         for i in range(max_attempts):
+            current_prompt = prompt
             if error:
-                prompt = f"""FORMAT VIOLATION. You must return the CompositionSpec as a single JSON object.\nYour previous attempt failed: {error}\nYou must return ONLY the `CompositionSpec` JSON object.\n"""
-            
-            raw = self.spec_llm.stream_complete(DEFAULT_SYSTEM_PROMPT, prompt, temperature=0.1, max_tokens=2000, on_token=on_token) if (stream and i==0) else self.spec_llm.complete(DEFAULT_SYSTEM_PROMPT, prompt, temperature=0.1, max_tokens=2000)
+                # Repair prompt: provide feedback to the LLM
+                current_prompt = f"""You previously produced an invalid CompositionSpec.
+Please correct the following error and return ONLY the corrected JSON object.
 
+ERROR: {error}
+INVALID OUTPUT: {raw_output_for_repair or "N/A"}
+
+{prompt}
+"""
+            
+            raw = self.spec_llm.stream_complete(DEFAULT_SYSTEM_PROMPT, current_prompt, temperature=0.1, max_tokens=2000, on_token=on_token) if (stream and i==0) else self.spec_llm.complete(DEFAULT_SYSTEM_PROMPT, current_prompt, temperature=0.1, max_tokens=2000)
+
+            # --- Robustness fixes begin here ---
             print(f"--- RAW LLM RESPONSE (CompositionSpec) ---\n{repr(raw)}\n--- END ---") # Log raw response
+            raw_output_for_repair = raw # Store for potential repair prompt
 
             if not raw:
-                raise RuntimeError("CompositionSpec generation returned no content from LLM")
+                error = RuntimeError("CompositionSpec generation returned no content from LLM.")
+                continue
             if not isinstance(raw, str):
-                raise RuntimeError(f"LLM returned non-string: {type(raw)} -> {raw}")
+                error = RuntimeError(f"LLM returned non-string: {type(raw)} -> {raw}")
+                continue
 
             spec_text = raw.strip()
             if not spec_text:
-                raise RuntimeError("LLM returned empty string for CompositionSpec generation")
+                error = RuntimeError("LLM returned empty string for CompositionSpec generation.")
+                continue
 
             try:
                 raw_json = extract_json_block(spec_text)
@@ -194,19 +253,20 @@ class LLMInterface:
 
                 # Type checks for iterables
                 if not isinstance(data["steps"], list):
-                    raise ValueError(f"CompositionSpec.steps must be list, got {type(data['steps'])}")
+                    raise ValueError(f"CompositionSpec.steps must be list, got {type(data['steps'])}.")
                 if not isinstance(data["inputs"], dict):
-                    raise ValueError(f"CompositionSpec.inputs must be dict, got {type(data['inputs'])}")
+                    raise ValueError(f"CompositionSpec.inputs must be dict, got {type(data['inputs'])}.")
                 if not isinstance(data["global_postconditions"], list):
-                    raise ValueError(f"CompositionSpec.global_postconditions must be list, got {type(data['global_postconditions'])}")
+                    raise ValueError(f"CompositionSpec.global_postconditions must be list, got {type(data['global_postconditions'])}.")
                 if not isinstance(data["failure_policy"], list):
-                    raise ValueError(f"CompositionSpec.failure_policy must be list, got {type(data['failure_policy'])}")
+                    raise ValueError(f"CompositionSpec.failure_policy must be list, got {type(data['failure_policy'])}.")
                 if not isinstance(data["semantic_tags"], list):
-                    raise ValueError(f"CompositionSpec.semantic_tags must be list, got {type(data['semantic_tags'])}")
+                    raise ValueError(f"CompositionSpec.semantic_tags must be list, got {type(data['semantic_tags'])}.")
 
                 # Re-hydrate into dataclasses for type safety and cache
-                if not all(k in data for k in ["pipeline_id", "description"]): # 'steps' is now defaulted
-                    raise ValueError("Generated CompositionSpec is missing required keys: pipeline_id or description.")
+                required_top_keys = ["pipeline_id", "description"]
+                if not all(k in data for k in required_top_keys):
+                    raise ValueError(f"Generated CompositionSpec is missing required top-level keys: {', '.join(k for k in required_top_keys if k not in data)}.")
                 
                 steps = [CompositionStep(
                     id=s.get('id', f"step_{idx}"), # Provide default ID
@@ -218,7 +278,7 @@ class LLMInterface:
                     then_bind={k: StepBinding(v) for k, v in s.get('then_bind', {}).items()}
                 ) for idx, s in enumerate(data['steps'])]
 
-                policies = [FailurePolicy(**p) for p in data.get('failure_policy', [])]
+                policies = [FailurePolicy(**p) for p in data['failure_policy']]
 
                 comp_spec_obj = CompositionSpec(
                     pipeline_id=data['pipeline_id'],
@@ -236,10 +296,13 @@ class LLMInterface:
 
             except Exception as e:
                 error = e
-                print(f"CompositionSpec generation failed (attempt {i+1}/{max_attempts}): {e}")
+                print("CompositionSpec generation exception:")
+                traceback.print_exc() # Print full traceback
+                print(f"CompositionSpec generation failed (attempt {i+1}/{max_attempts}): {e!r}") # Use !r for detailed error
                 data = None
+                continue # Try again
 
-        raise ValueError(f"Failed to generate a valid CompositionSpec after {max_attempts} attempts. Last error: {error}")
+        raise ValueError(f"Failed to generate a valid CompositionSpec after {max_attempts} attempts. Last error type: {type(error).__name__ if error else 'None'} Last error: {error!r}")
 
     def generate_implementation(
         self,

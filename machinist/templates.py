@@ -2,6 +2,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Literal, Union
 
+# Avoid circular import by importing inside functions or using TYPE_CHECKING if used only for types.
+# But here we need to instantiate it. 
+# It seems registry does not import templates, so we are safe.
+from .registry import ToolSpec
+
 SideEffect = Literal["filesystem_read", "filesystem_write", "filesystem_delete", "network", "process"]
 SemanticTag = Literal["pure", "idempotent", "safe_to_retry"]
 
@@ -138,6 +143,7 @@ class CompositionStep:
     tool_id: str # References a PseudoSpecTemplate.id or a registered ToolSpec.name
     bind: Dict[str, StepBinding] = field(default_factory=dict) # Param name to StepBinding
     foreach: str | None = None # e.g., "$find.files"
+    if_condition: str | None = None # e.g., "$file_exists" or "$count > 5"
     outputs: Dict[str, str] = field(default_factory=dict) # Name output for later steps, e.g., {"files": "list[path]"}
     # The 'then' part is a bit tricky for a simple dataclass, might be another CompositionStep
     # For now, let's keep it simple and assume 'then' means direct execution of another tool.
@@ -428,6 +434,9 @@ def spec_from_fg_skeleton(skeleton: Dict[str, Any]) -> ToolSpec:
     Converts a tool_spec skeleton from FunctionGemma into a proper ToolSpec object.
     """
     name = skeleton.get("name", "unnamed_tool")
+    # Sanitize name to be a valid python identifier
+    name = name.replace(".", "_").replace("-", "_")
+    
     description = skeleton.get("description", "")
     
     # Build signature and inputs

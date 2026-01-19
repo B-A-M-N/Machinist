@@ -22,13 +22,13 @@ Filesystem-backed (`registry/<tool_id>/metadata.json` + artifacts) storing spec,
 Adjust policy in `machinist/sandbox.py`.
 
 ## LLM integration
-`machinist/llm.py` defines an abstract `LLMClient`. `machinist/cli.py` contains `StubOllamaClient`; wire it to Ollama CLI or API (models available: `phi4-mini`, `llama3.2`, `qwen3:4b`, `qwen2.5-coder:3b`).
+`machinist/llm.py` defines an abstract `LLMClient`. `machinist/cli.py` contains `StubOllamaClient`; wire it to Ollama CLI or API (models available: `rnj-1:8b-cloud`, `phi4-mini`, `llama3.2`, `qwen3:4b`, `qwen2.5-coder:3b`).
 
 ## Interactive CLI
 ```
 python -m machinist.cli
 ```
-Prompts for goal and model (choices: `phi4-mini`, `llama3.2`, `qwen3:4b`, `qwen2.5-coder:3b`), shows spec/code/tests, asks before validating in the sandbox, and asks before promoting to the registry.
+Prompts for goal and model (choices: `rnj-1:8b-cloud`, `phi4-mini`, `llama3.2`, `qwen3:4b`, `qwen2.5-coder:3b`), shows spec/code/tests, asks before validating in the sandbox, and asks before promoting to the registry.
 
 ## Notes / TODO
 - Add real Ollama client (streaming or batch).
