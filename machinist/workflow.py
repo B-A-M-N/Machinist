@@ -2,6 +2,7 @@ from __future__ import annotations
 from typing import Dict, Any, List
 import os
 import re
+import json
 
 from .templates import CompositionSpec
 from .registry import ToolRegistry
@@ -12,6 +13,15 @@ class WorkflowEngine:
     """
     def __init__(self, tool_registry: ToolRegistry):
         self.tool_registry = tool_registry
+        self._execution_cache = {}
+
+    def _hash_inputs(self, tool_id: str, inputs: Dict[str, Any]) -> str:
+        # Sort keys to ensure stability. Convert values to string for simple hashing.
+        try:
+            s = json.dumps({k: str(v) for k,v in sorted(inputs.items())}, sort_keys=True)
+        except:
+            s = str(inputs)
+        return f"{tool_id}:{s}"
 
     def _resolve_value(self, value: str, context: Dict[str, Any], item: Any = None) -> Any:
         """
@@ -79,6 +89,58 @@ class WorkflowEngine:
         return False
 
 
+    def _run_step_logic(self, step_id: str, tool_id: str, kwargs: Dict[str, Any]) -> Any:
+        # 1. Check Nested Workflow
+        nested_workflow = self.tool_registry.find_workflow_by_id(tool_id)
+        if nested_workflow:
+            print(f"    -> Entering nested workflow '{tool_id}'")
+            # Recursive call
+            # Note: nested workflow outputs context, but usually we want a specific output or the whole context?
+            # CompositionSpec doesn't define a "return value" for the workflow itself, only context.
+            # We'll assume the nested workflow returns its final context.
+            # But a step expects a single result usually, or we map outputs.
+            # For now, return the whole context.
+            return self.execute(nested_workflow, kwargs)
+
+        # 2. Find Tool
+        concrete_tool_ids = self.tool_registry.find_by_template_id(tool_id)
+        
+        # Fallback: try to find by tool name directly
+        if not concrete_tool_ids:
+             all_tools = self.tool_registry.list_tools()
+             concrete_tool_ids = [t.tool_id for t in all_tools if t.spec.name == tool_id]
+
+        if not concrete_tool_ids:
+            raise RuntimeError(f"Step '{step_id}': No registered tool found for template/name '{tool_id}'")
+        
+        tool_id_to_run = concrete_tool_ids[0]
+        
+        # 3. Check Cache
+        meta = self.tool_registry.load(tool_id_to_run)
+        # Check semantic tags (if available on spec) or deterministic flag
+        is_pure = False
+        if meta:
+            spec = meta.spec
+            is_pure = spec.deterministic or (hasattr(spec, 'semantic_tags') and ("pure" in spec.semantic_tags or "idempotent" in spec.semantic_tags))
+        
+        cache_key = self._hash_inputs(tool_id_to_run, kwargs)
+        if is_pure and cache_key in self._execution_cache:
+            print(f"    -> Cache Hit for {tool_id_to_run}")
+            return self._execution_cache[cache_key]
+
+        # 4. Execute
+        executable_func = self.tool_registry.get_executable(tool_id_to_run)
+        if not executable_func:
+            raise RuntimeError(f"Step '{step_id}': Could not load executable for tool '{tool_id_to_run}'")
+            
+        print(f"    -> Calling {executable_func.__name__} with: {kwargs}")
+        result = executable_func(**kwargs)
+        
+        if is_pure:
+            self._execution_cache[cache_key] = result
+            
+        return result
+
     def execute(self, comp_spec: CompositionSpec, inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
         Executes the workflow defined by the CompositionSpec.
@@ -96,24 +158,7 @@ class WorkflowEngine:
                       print(f"    -> Skipping step '{step.id}' because condition '{step.if_condition}' is False.")
                       continue
 
-            # 1. Find a concrete, executable tool for the step's abstract tool_id
-            concrete_tool_ids = self.tool_registry.find_by_template_id(step.tool_id)
-            
-            # Fallback: try to find by tool name directly
-            if not concrete_tool_ids:
-                 all_tools = self.tool_registry.list_tools()
-                 concrete_tool_ids = [t.tool_id for t in all_tools if t.spec.name == step.tool_id]
-
-            if not concrete_tool_ids:
-                raise RuntimeError(f"Step '{step.id}': No registered tool found for template/name '{step.tool_id}'")
-            
-            # For now, just use the first one found
-            tool_id_to_run = concrete_tool_ids[0]
-            executable_func = self.tool_registry.get_executable(tool_id_to_run)
-            if not executable_func:
-                raise RuntimeError(f"Step '{step.id}': Could not load executable for tool '{tool_id_to_run}'")
-
-            # 2. Check for `foreach` loop
+            # Check for `foreach` loop
             if step.foreach:
                 loop_collection = self._resolve_value(step.foreach, context)
                 if not isinstance(loop_collection, list):
@@ -121,43 +166,39 @@ class WorkflowEngine:
                 
                 step_outputs = []
                 for item in loop_collection:
-                    # 3. Resolve parameters for this iteration
+                    # Resolve parameters for this iteration
                     kwargs = {}
                     for param_name, binding in step.bind.items():
                         kwargs[param_name] = self._resolve_value(binding.value, context, item)
 
-                    # 4. Execute the tool
+                    # Execute logic
                     try:
-                        print(f"    -> Calling {executable_func.__name__} with: {kwargs}")
-                        result = executable_func(**kwargs)
+                        result = self._run_step_logic(step.id, step.tool_id, kwargs)
                         step_outputs.append(result)
                     except Exception as e:
                         print(f"      ERROR during execution of step '{step.id}' for item '{item}': {e}")
-                        # TODO: Implement failure policy
-                        raise e # For now, fail fast
+                        raise e 
                 
-                # 5. Store the collected results of the loop
+                # Store the collected results
                 if step.outputs:
                     output_name = next(iter(step.outputs.keys()))
                     context[step.id] = {output_name: step_outputs}
                     print(f"    -> Stored loop output '{step.id}.{output_name}'")
 
-            else: # No `foreach`, single execution
-                # 3. Resolve parameters
+            else: # Single execution
+                # Resolve parameters
                 kwargs = {}
                 for param_name, binding in step.bind.items():
                     kwargs[param_name] = self._resolve_value(binding.value, context)
                 
-                # 4. Execute the tool
+                # Execute logic
                 try:
-                    print(f"    -> Calling {executable_func.__name__} with: {kwargs}")
-                    result = executable_func(**kwargs)
+                    result = self._run_step_logic(step.id, step.tool_id, kwargs)
                 except Exception as e:
                     print(f"      ERROR during execution of step '{step.id}': {e}")
-                    # TODO: Implement failure policy
                     raise e
 
-                # 5. Store output
+                # Store output
                 if step.outputs:
                     output_name = next(iter(step.outputs.keys()))
                     context[step.id] = {output_name: result}

@@ -33,6 +33,7 @@ class ToolSpec:
     failure_modes: str
     deterministic: bool
     imports: List[str] = field(default_factory=list)
+    semantic_tags: List[str] = field(default_factory=list)
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, sort_keys=True, indent=2)
@@ -258,29 +259,14 @@ class ToolRegistry:
 
 
                 steps = [CompositionStep(
-
-
                     id=s['id'],
-
-
                     tool_id=s['tool_id'],
-
-
-                    bind={k: StepBinding(v) for k, v in s.get('bind', {}).items()},
-
-
+                    bind={k: StepBinding(**v) if isinstance(v, dict) else StepBinding(v) for k, v in s.get('bind', {}).items()},
                     foreach=s.get('foreach'),
-
-
                     outputs=s.get('outputs', {}),
-
-
+                    if_condition=s.get('if_condition'),
                     then_tool_id=s.get('then_tool_id'),
-
-
-                    then_bind={k: StepBinding(v) for k, v in s.get('then_bind', {}).items()}
-
-
+                    then_bind={k: StepBinding(**v) if isinstance(v, dict) else StepBinding(v) for k, v in s.get('then_bind', {}).items()}
                 ) for s in spec_data['steps']]
 
 
@@ -335,8 +321,24 @@ class ToolRegistry:
             return None
 
 
-
-
+    def find_workflow_by_id(self, pipeline_id: str) -> Optional[Any]: # Returns CompositionSpec
+        """Finds a cached CompositionSpec by its pipeline_id."""
+        for file in self._cached_specs_dir().glob("*.json"):
+            try:
+                data = json.loads(file.read_text(encoding="utf-8"))
+                if data.get("spec_type") == "CompositionSpec":
+                    spec_data = data["spec"]
+                    if spec_data.get("pipeline_id") == pipeline_id:
+                        # Rehydrate
+                        # Avoid circular import by doing minimal dict return or lazy import
+                        # For now, return the dict, let caller hydrate? 
+                        # Or duplicate hydration logic.
+                        # Let's call load_cached_spec
+                        obj, _ = self.load_cached_spec(file.stem)
+                        return obj
+            except:
+                continue
+        return None
 
     def get_executable(self, tool_id: str) -> Optional[Callable]:
 
@@ -509,7 +511,7 @@ class ToolRegistry:
         spec_data.setdefault("imports", [])
 
 
-
+        
 
 
         spec = ToolSpec(**spec_data)
@@ -594,9 +596,6 @@ class ToolRegistry:
 
 
         return matching_tool_ids
-
-
-
 
 
     def search_tools(self, query: str, embedder: Callable[[str], List[float]] | None = None, top_k: int = 5) -> List[ToolMetadata]:
@@ -740,4 +739,3 @@ class ToolRegistry:
 
 
         return promoted_paths
-

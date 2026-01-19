@@ -222,18 +222,42 @@ def handle_run_workflow(pipeline: MachinistPipeline, registry: ToolRegistry, arg
         return
         
     print("\n[1/3] Generating composition spec...")
-    comp_spec = pipeline.generate_composition_spec(goal, list(TEMPLATE_REGISTRY.values()))
+    # Gather templates from registry + built-ins
+    registered_tools = registry.list_tools()
+    registered_templates = [PseudoSpecTemplate.from_tool_spec(t.spec) for t in registered_tools]
+    all_templates = list(TEMPLATE_REGISTRY.values()) + registered_templates
+    
+    # Also pass the tool IDs for rules to prevent hallucination
+    # Note: PseudoSpecTemplate.from_tool_spec sets id=spec.name
+    available_tool_ids = [t.id for t in all_templates]
+    ids_str = ", ".join(f'"{tid}"' for tid in available_tool_ids)
+
+    comp_spec = pipeline.generate_composition_spec(goal, all_templates, available_tool_ids_for_rules_str=ids_str)
     _print_block("Composition Spec", json.dumps(asdict(comp_spec), indent=2, default=str))
 
     print("\n[2/3] Preparing workflow engine...")
     engine = WorkflowEngine(registry)
     
     workflow_inputs = {}
+    
+    # Pre-fill from --inputs arg if provided
+    if args.inputs:
+        try:
+            workflow_inputs.update(json.loads(args.inputs))
+        except Exception as e:
+            print(f"Warning: Failed to parse --inputs JSON: {e}")
+
     if comp_spec.inputs:
-        print("Please provide inputs for the workflow:")
+        # Only ask for missing inputs
         for name, type_hint in comp_spec.inputs.items():
-            value = input(f"  {name} ({type_hint}): ")
-            workflow_inputs[name] = value
+            if name in workflow_inputs:
+                continue
+                
+            if args.mode is not None:
+                 print(f"Non-interactive mode: Missing input '{name}' ({type_hint}). Workflow may fail.")
+            else:
+                value = input(f"  {name} ({type_hint}): ")
+                workflow_inputs[name] = value
 
     print("\n[3/3] Executing workflow...")
     try:
@@ -360,6 +384,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--registry", default="registry", help="Registry directory.")
     parser.add_argument("--mode", help="Mode to run (1-6).")
     parser.add_argument("--goal", help="Goal or query for the selected mode.")
+    parser.add_argument("--inputs", help="JSON string of inputs for workflows.")
+    parser.add_argument("--promote", action="store_true", help="Automatically promote tool to registry in non-interactive mode.")
     args = parser.parse_args(argv)
 
     registry = ToolRegistry(Path(args.registry))

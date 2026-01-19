@@ -200,10 +200,11 @@ class MachinistPipeline:
 
         clean_tests = extract_python_code(raw_tests)
 
-        # FIX: Add a hard guard that rejects curly-brace wrapped tests
-        if clean_tests.lstrip().startswith("{") or clean_tests.rstrip().endswith("}"):
-            raise ValueError("Generated test code is wrapped in curly braces, which is invalid.")
-
+        # Robustness: Strip leading/trailing curly braces if the model wrapped the code in them
+        clean_tests = clean_tests.strip()
+        while clean_tests.startswith("{") and clean_tests.endswith("}"):
+            clean_tests = clean_tests[1:-1].strip()
+        
         if template and template.intent == "copy" and "assert not src.exists()" in clean_tests:
             raise ValueError("Semantic contradiction: Test for a copy tool asserts that the source file is deleted.")
 

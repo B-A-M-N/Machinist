@@ -273,6 +273,12 @@ def extract_python_code(text: str) -> str:
     if candidate.startswith("```"):
         return extract_python_code(candidate)
 
+    # Robustness: Strip leading/trailing curly braces if the model wrapped the code in them
+    # This is common when the LLM gets confused by JSON prompts.
+    candidate = candidate.strip()
+    while candidate.startswith("{") and candidate.endswith("}"):
+        candidate = candidate[1:-1].strip()
+
     # If multiple blocks, some might be explanations or separate files.
     # We prefer the one that looks like code (has imports or defs).
     best_candidate = candidate
